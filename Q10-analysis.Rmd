@@ -1,0 +1,2185 @@
+---
+title: "Q10 of Ra and Rh analysis"
+author: "Yaxian"
+date: "1/2/2024"
+output: html_document
+---
+```{r ,message=FALSE, include=FALSE, echo=FALSE}
+# Set chunks defaults; these options will be applied to all subsequent chunks
+knitr::opts_chunk$set(results = 'hide', message = TRUE, include = TRUE, echo = FALSE,
+                      fig.height = 4.5, fig.width = 8, cache = TRUE)
+OUTPUT_DIR		<- "outputs/"
+LOG_DIR			<- "logs/"
+SEPARATOR		<- "-------------------------------------------"
+DATA_DIR <- 'data'
+if(!file.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR)
+if(!file.exists(LOG_DIR)) dir.create( LOG_DIR )
+library(cowplot)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+theme_set(theme_bw())
+library(lubridate)
+library(kableExtra)
+library(cowplot)
+library(knitr)
+library("ggpubr")
+library(reshape)
+library(ggplot2)
+# install.packages("ggmap")
+library(ggmap)
+# install.packages("maps")
+library(maps)
+# install.packages("mapdata")
+library(mapdata)
+library(purrr)
+library(tidyr)
+library(broom)
+#library(cosore)
+# rm(cosore)
+# Source all needed functions
+source('functions.R')
+library(dunn.test)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(graticule)
+library(rmapshaper)
+library(grid)
+library(scales)
+library(RANN)
+library(plotbiomes)
+library(ggpubr)
+library(gridExtra)
+library(ggsci)        
+library(ggdist)       
+library(ggbeeswarm)
+library(plspm)
+library(randomForest)
+library(factoextra)
+```
+
+
+## load data
+```{r}
+IGBP_koppen <- read.csv("data/IGBP_Koppen_MODIS.csv")
+srdb_v4 <- read.csv(paste0(DATA_DIR,'/', 'srdbv4.csv'), header = T) # SRDB_V4 
+srdb_v5 <- read.csv(paste0(DATA_DIR, '/', 'srdb_v5.csv'), header = T) # SRDB_V5
+
+MGRsD <- read.csv(paste0(DATA_DIR,'/', "MGRsDAllData.csv"), header=T) # MGRsD data
+DGRhRa <- read.csv(paste0(DATA_DIR,'/', "DGRhRa.csv"), header = T) # Daily time scale global Rh, Ra, and Q10 of Rh, Ra dataset
+
+HGRsD <- read.csv(paste0(DATA_DIR,'/', "HGRsD_OriginalData.csv"), header = T) # Global hourly time scale Rs data
+HGRsD$DN <- ifelse (is.na(HGRsD$TimeLable), 'NotA', ifelse(HGRsD$TimeLable >=7 & HGRsD$TimeLable <= 18, 'Day', 'Night'))   
+```
+
+```{r, fig.height=6, fig.width=8}
+# test Q10 under Ra and Rh dominant sites
+threshold <- 0.5
+
+analyze_groups <- function(sdata, Q10_type, threshold = 0.5) {
+  print(SEPARATOR)
+  n_col <- colnames(sdata) == Q10_type
+  sdata <- sdata[!is.na(sdata[, n_col]), ]
+ sdata <- sdata[!is.na(sdata$RC_annual), ]
+ sdata$Q10 <- suppressWarnings(as.numeric(sdata[[Q10_type]]))
+ sdata <- sdata[!is.na(sdata$Q10) & sdata$Q10 > 0, ]
+  
+  sdata$Ra_Rh_dom <- ifelse(sdata$RC_annual > threshold, 'Ra_dom', 'Rh_dom')
+  n_Ra <- nrow(subset(sdata, sdata$Ra_Rh_dom == 'Ra_dom'))
+  n_Rh <- nrow(subset(sdata, sdata$Ra_Rh_dom == 'Rh_dom'))
+  
+  print(paste0('**********normal-test**********', Q10_type))
+  print(shapiro.test(sdata[sdata$Ra_Rh_dom == "Ra_dom", ]$Q10)) # test normality of Ra
+  print(shapiro.test(sdata[sdata$Ra_Rh_dom == "Rh_dom", ]$Q10)) # test normality of Rh
+  # test whether variance differ
+  print(var.test(Q10 ~ Ra_Rh_dom, data = sdata))
+  
+  print(paste0('**********ANOVA**********'))
+  anova <- aov(Q10 ~ Ra_Rh_dom, data = sdata)
+  print (summary(anova))
+  
+  print(paste0('**********t-test**********'))
+  t_t <- t.test(Q10 ~ Ra_Rh_dom, data = sdata, var.eq = TRUE)
+  print(t_t) 
+  
+  print(paste0('**********wilcox-test**********'))
+ wil <- wilcox.test(Q10 ~ Ra_Rh_dom, data = sdata, exact = FALSE)
+ print(wil)
+  pval <- wil$p.value
+  sig  <- if      (pval < 0.001) "***"
+          else if (pval < 0.01 ) "**"
+          else if (pval < 0.05 ) "*"
+          else                   "ns"
+p_text  <- paste0("p = ", signif(pval, 2))
+  
+  # Set plot title dynamically based on Q10_type
+suffix_map <- c(Q10_0_10  = "(a) 0–10°C", Q10_5_15  = "(b) 5–15°C", Q10_10_20 = "(c) 10–20°C",Q10_0_20  = "(d) 0–20°C")
+plot_title <- suffix_map[Q10_type]
+  
+  # Create ggplot with dynamic title
+p <- ggplot(sdata, aes(Q10, color = RC_annual > 0.5, fill = RC_annual > 0.5)) +
+  geom_density(alpha = 0.25) +
+  labs( x = expression(Q[10]^"Rs"),tag = plot_title ) +  
+scale_fill_manual(
+    name   = " ",
+ breaks = c(FALSE, TRUE),   # FALSE → Ra/Rs ≤ threshold；TRUE → Ra/Rs > threshold
+  labels = c(
+    paste0("Ra/Rs \u2264 ", threshold, " (n=", n_Ra, ")"),
+    paste0("Ra/Rs > ",  threshold, " (n=", n_Rh, ")") ),
+  values = c("FALSE" = "skyblue", "TRUE" = "pink")) +
+  scale_color_manual(
+    name   = " ",
+  breaks = c(FALSE, TRUE),
+  labels = c(
+    paste0("Ra/Rs \u2264 ", threshold, " (n=", n_Ra, ")"),
+    paste0("Ra/Rs > ",  threshold, " (n=", n_Rh, ")")
+  ),
+  values = c("FALSE" = "skyblue", "TRUE" = "pink")) +
+    annotate("text",x = 6, y = Inf, label = sig,
+             hjust = 1.25, vjust = 1.5,size = 7, fontface = "bold",color = "red"
+    ) +  theme(
+    legend.position       = c(0.75, 0.65),
+    legend.background     = element_rect(fill = NA, color = NA),
+    legend.key            = element_blank(),
+    plot.tag.position     = c(0.1, 0.99),
+    plot.tag              = element_text(hjust = 0, vjust = 1, face = "bold", size = rel(1.1))
+  )
+  return(p)
+}
+
+# Plot density plots and arrange them in a grid
+p_a <- analyze_groups(srdb_v4, 'Q10_0_10', threshold = 0.5) +labs(y = "Density") 
+p_b <- analyze_groups(srdb_v4, 'Q10_5_15', threshold = 0.5) +labs(y = "Density") 
+p_c <- analyze_groups(srdb_v4, 'Q10_10_20', threshold = 0.5) +labs(y = "Density")
+p_d <- analyze_groups(srdb_v4, 'Q10_0_20', threshold = 0.5) +labs(y = "Density") 
+theme_axes <- theme(
+  axis.title.x = element_text(size = 12),
+  axis.title.y = element_text(size = 12),
+  axis.text.x  = element_text(size = 11),
+  axis.text.y  = element_text(size = 11))
+p_a <- p_a + theme(plot.tag.position = c(0.15, 0.98),plot.tag = element_text(hjust = 0, vjust = 1, face = "bold"),panel.grid.major = element_blank(),panel.grid.minor = element_blank())+theme_axes
+p_b <- p_b + theme(plot.tag.position = c(0.15, 0.98),plot.tag = element_text(hjust = 0, vjust = 1, face = "bold"),panel.grid.major = element_blank(),panel.grid.minor = element_blank())+theme_axes
+p_c <- p_c + theme( plot.tag.position = c(0.15, 0.98),plot.tag = element_text(hjust = 0, vjust = 1, face = "bold"),panel.grid.major = element_blank(),
+                   panel.grid.minor = element_blank())+theme_axes
+p_d <- p_d + theme(plot.tag.position = c(0.15, 0.98),plot.tag = element_text(hjust = 0, vjust = 1, face = "bold"),panel.grid.major = element_blank(),panel.grid.minor = element_blank())+theme_axes
+grid.arrange( p_a, p_b,p_c, p_d,ncol = 2)
+```
+
+```{r}
+#Mean Q10Rs values are compared between sites below (blue) and above (pink) a moving RaRs threshold ranging from 0.30 to 0.60 in increments of 0.025.
+boot_ci_mean <- function(x, B = 1000){
+  x <- x[!is.na(x)]
+  n <- length(x)
+  if(n < 3) return(c(mean = NA, lwr = NA, upr = NA, n = n))
+
+  boots <- replicate(B, mean(sample(x, size = n, replace = TRUE)))
+  c(mean = mean(boots),
+    lwr  = as.numeric(quantile(boots, 0.025, na.rm = TRUE)),
+    upr  = as.numeric(quantile(boots, 0.975, na.rm = TRUE)),
+    n    = n)
+}
+analyze_groups_threshold <- function(sdata, Q10_type,
+                                     cuts = seq(0.30, 0.60, by = 0.025),
+                                     B = 1000,
+                                     min_n = 8){
+  print(SEPARATOR)
+  n_col <- colnames(sdata) == Q10_type
+  sdata <- sdata[!is.na(sdata[, n_col]), ]
+  sdata <- sdata[!is.na(sdata$RC_annual), ]
+  sdata$Q10 <- sdata[, n_col]
+  sdata <- sdata[sdata$Q10 > 0, ]
+
+  suffix_map <- c(Q10_0_10  = "(e) 0–10°C",
+                  Q10_5_15  = "(f) 5–15°C",
+                  Q10_10_20 = "(g) 10–20°C",
+                  Q10_0_20  = "(h) 0–20°C")
+  plot_title <- suffix_map[Q10_type]
+  res <- purrr::map_dfr(cuts, function(c0){
+    sdata2 <- dplyr::as_tibble(sdata) %>%
+      dplyr::mutate(group = ifelse(RC_annual > c0, "Ra/Rs > threshold", "Ra/Rs ≤ threshold"))
+    out <- purrr::map_dfr(c("Ra/Rs > threshold","Ra/Rs ≤ threshold"), function(g){
+      x <- sdata2$Q10[sdata2$group == g]
+      n <- sum(!is.na(x))
+      if(n < min_n){
+        tibble::tibble(group = g, mean = NA, lwr = NA, upr = NA, n = n)
+      } else {
+        ci <- boot_ci_mean(x, B = B)
+        tibble::tibble(group = g,
+                       mean = ci["mean"], lwr = ci["lwr"], upr = ci["upr"], n = ci["n"])
+      }
+    })
+    out %>% dplyr::mutate(cut = c0)
+  })
+
+  res$group <- factor(res$group, levels = c("Ra/Rs ≤ threshold", "Ra/Rs > threshold"))
+  col_map <- c("Ra/Rs ≤ threshold" = "skyblue", "Ra/Rs > threshold" = "pink")
+
+  ggplot(res, aes(x = cut, y = mean, color = group, fill = group)) +
+    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.25, color = NA, show.legend = FALSE) +
+    geom_line(linewidth = 1) +
+    geom_point(aes(size = n), alpha = 0.85) +
+    scale_color_manual(values = col_map, name = NULL) +
+    scale_fill_manual(values = col_map, guide = "none") +
+    scale_size_continuous(name = "Sample size (n)", range = c(1, 7)) +
+    labs(x   = "Ra/Rs threshold", y   = expression(Q[10]^"Rs"), tag = plot_title ) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      legend.background = element_rect(fill = NA, color = NA),
+      legend.key = element_blank(),
+      plot.tag.position = c(0.1, 0.99),
+      plot.tag = element_text(hjust = 0, vjust = 1, face = "bold", size = rel(1.1))
+    )
+}
+
+theme_axes <- theme(
+  axis.title.x = element_text(size = 12),
+  axis.title.y = element_text(size = 12),
+  axis.text.x  = element_text(size = 11),
+  axis.text.y  = element_text(size = 11)
+)
+
+p_t1 <- analyze_groups_threshold(srdb_v4, "Q10_0_10", B = 1000, min_n = 8) + theme_axes + theme(plot.tag.position = c(0.20, 0.98), legend.position = "none")+ scale_y_continuous(labels = label_number(accuracy = 0.01))
+p_t2 <- analyze_groups_threshold(srdb_v4, "Q10_5_15", B = 1000, min_n = 8) + theme_axes + theme(plot.tag.position = c(0.20, 0.98), legend.position = "none")+ scale_y_continuous(labels = label_number(accuracy = 0.01))
+p_t3 <- analyze_groups_threshold(srdb_v4, "Q10_10_20", B = 1000, min_n = 8) + theme_axes + theme(plot.tag.position = c(0.20, 0.98), legend.position = "none")+ scale_y_continuous(labels = label_number(accuracy = 0.01))
+p_t4 <- analyze_groups_threshold(srdb_v4, "Q10_0_20", B = 1000, min_n = 8) + theme_axes + theme(plot.tag.position = c(0.20, 0.98), legend.position = "none")+ scale_y_continuous(labels = label_number(accuracy = 0.01))
+
+panel_2x2 <- cowplot::plot_grid(
+  p_t1, p_t2,
+  p_t3, p_t4,
+  ncol  = 2,
+  align = "hv",
+  axis  = "tblr"
+)
+
+leg_levels <- c("Ra/Rs ≤ threshold", "Ra/Rs > threshold")
+col_map <- c("Ra/Rs ≤ threshold" = "skyblue", "Ra/Rs > threshold" = "pink")
+n_breaks <- c(20, 50, 100)
+
+leg_df <- tibble(group = factor(rep(leg_levels, each = length(n_breaks)), levels = leg_levels),n = rep(n_breaks, times = length(leg_levels)), x = 1, y = 1)
+
+p_leg_strip <- ggplot(leg_df, aes(x, y, color = group, size = n)) +
+  geom_point(alpha = 0, show.legend = TRUE) +  
+  scale_color_manual(values = col_map, name = NULL) +
+  scale_size_continuous(
+    name   = "Sample size (n)",
+    breaks = n_breaks,
+    range  = c(2, 5.5)
+  ) +
+  guides(
+    color = guide_legend(
+      order = 1,
+      override.aes = list(alpha = 1, size = 5)
+    ),
+    size = guide_legend(
+      order = 2,
+      override.aes = list(alpha = 1, shape = 16)
+    )
+  ) +
+  theme_void() +
+  theme(
+    legend.text  = element_text(size = 11),
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    legend.box       = "horizontal",
+     legend.spacing.x = unit(40, "pt")
+  )
+
+
+final_plot <- cowplot::plot_grid(panel_2x2,
+  p_leg_strip,
+  ncol = 1,
+  rel_heights = c(1, 0.06))
+print(final_plot)
+#ggsave("outputs/threshold.png", plot = final_plot, width = 8, height = 6, dpi = 300)
+```
+
+## prepare datasets
+```{r}
+#After filtering with different Q10_type (temperature), add the new column Q10_type to create a subset of the data frame.
+filtration <- function (sdata, Q10_type, RC) {
+  n_col <- colnames(sdata) == Q10_type
+  n_RC <- colnames(sdata) == RC
+  sdata <- sdata[!is.na(sdata[, n_col]), ]
+  sdata <- sdata[!is.na(sdata[, n_RC]) & sdata[, n_RC] > 0, ]
+  sdata <- subset(sdata, select=c("Record_number", "Study_number", "Longitude", "Latitude","YearsOfData","Species", "Biome", "Ecosystem_type", "Leaf_habit","Partition_method","R10", Q10_type, RC  ) )
+  sdata$Q10_type <- Q10_type
+  colnames(sdata) <- c( "Record_number", "Study_number","Longitude", "Latitude","YearsOfData", "Species", "Biome", "Ecosystem_type", "Leaf_habit","Partition_method",
+                        "R10", "Q10", "RC_annual", "Q10_type" )
+  
+  return(sdata)
+}
+srdb_sub <- rbind(filtration (srdb_v4, 'Q10_0_10', 'RC_annual'),
+                  filtration (srdb_v4, 'Q10_5_15', 'RC_annual'),
+                  filtration (srdb_v4, 'Q10_10_20', 'RC_annual'),
+                  filtration (srdb_v4, 'Q10_0_20', 'RC_annual'))
+```
+
+```{r}
+q10_types <- c('Q10_0_10', 'Q10_5_15', 'Q10_10_20', 'Q10_0_20')
+
+regression_results <- data.frame(
+  Q10_type = character(),
+  R2 = numeric(),
+  p_value = numeric(),
+  label = character(),
+  stringsAsFactors = FALSE
+)
+
+y_positions <- c(3.5, 3.3, 2.2, 2.0)  
+for (i in seq_along(q10_types)) {
+  type <- q10_types[i]
+  filtered_data <- filtration(srdb_v4, type, 'RC_annual')
+  
+  if (nrow(filtered_data) > 0) {
+    filtered_data$AR_SR <- filtered_data$RC_annual
+    
+    model <- lm(Q10 ~ AR_SR, data = filtered_data)
+    model_summary <- summary(model)
+    
+    r_squared <- model_summary$r.squared
+    p_value <- coef(summary(model))["AR_SR", "Pr(>|t|)"]
+    
+    label <- sprintf("%s\nR²=%.2f, p=%.3f\n", gsub(" ", "~", type), r_squared, p_value)
+    
+    regression_results <- rbind(
+      regression_results,
+      data.frame(
+        Q10_type = type,
+        R2 = r_squared,
+        p_value = p_value,
+        label = label,
+        y_pos = y_positions[i],  
+        stringsAsFactors = FALSE
+      )
+    )
+  } else {
+    cat(sprintf("No data for Q10_type: %s\n", type))
+  }
+}
+
+combined_data <- do.call(rbind, lapply(q10_types, function(type) filtration(srdb_v4, type, 'RC_annual')))
+combined_data$AR_SR <- combined_data$RC_annual  
+
+num_bins <- 10  
+binned_data <- combined_data %>%
+  mutate(AR_bin = cut(AR_SR, breaks = num_bins, include.lowest = TRUE)) %>%
+  group_by(Q10_type, AR_bin) %>%
+  dplyr::summarise(
+    AR_mid = mean(AR_SR, na.rm = TRUE),  
+    Q10_mean = mean(Q10, na.rm = TRUE),  
+    Q10_se = sd(Q10, na.rm = TRUE) / sqrt(n()),  
+    count = n()  
+  ) %>%
+  ungroup()
+
+y_positions_label <- c(3.0, 2.78, 2.46, 2.6)
+y_positions_stats <- c(2.95 ,2.73, 2.41,  2.55)  
+regression_results$label_expr <- c(
+  "Q[10]~'(0–10 °C)'",
+  "Q[10]~'(5–15 °C)'",
+  "Q[10]~'(10–20 °C)'",
+  "Q[10]~'(0–20 °C)'"
+)
+labels_data <- data.frame(
+  Q10_type = regression_results$Q10_type,
+  label = regression_results$label_expr,
+  y_pos = y_positions_label
+)
+
+stats_data <- data.frame(
+  Q10_type = regression_results$Q10_type,
+label = c(
+    sprintf("R^2==%.2f*','~italic(p)==0.05", regression_results$R2[1]),
+    sprintf("R^2==%.2f*','~italic(p)<0.001", regression_results$R2[2]), 
+    sprintf("R^2==%.2f*','~italic(p)<0.01", regression_results$R2[3]),  
+    sprintf("R^2==%.2f*','~italic(p)<0.01", regression_results$R2[4])   
+  ),
+y_pos = y_positions_stats
+)
+
+RA_PLOT <- 
+  ggplot(binned_data, aes(x = AR_mid, y = Q10_mean, color = Q10_type, size = count)) +
+  geom_point(alpha = 0.8) +
+  geom_smooth(data = combined_data, 
+                aes(x = AR_SR, y = Q10, fill = Q10_type, color = Q10_type), # 映射回原始变量
+                method = "lm", 
+                se = TRUE, 
+                linetype = "solid", 
+                alpha = 0.35,size = 1.5 ) +
+  xlim(0.24, 0.85)+ylim(2.4, 3.2) + 
+  labs(x = "Ra/Rs", y  = expression(Q[10]^"Rs"), tag = "(a)" ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(), 
+    panel.border = element_rect(color = "black", fill = NA, size = 1),  
+    legend.position = "none",
+    plot.tag.position  = c(0.15, 0.97), 
+    plot.tag = element_text(face   = "bold", size   = rel(1.5) )) +
+  scale_color_manual(values = c(
+    "Q10_0_10" = "#1d9bf7",
+    "Q10_5_15" = "#35a153",
+    "Q10_10_20" = "#f26a11",
+    "Q10_0_20" = "#A6519E"
+  )) +
+  scale_fill_manual(values = c(
+     "Q10_0_10" = "#C3E2EC",
+    "Q10_5_15" = "#BCD1BC",
+    "Q10_10_20" = "#F3DAC0",
+    "Q10_0_20" = "#E3C6E0"
+  ), guide = "none") +
+  scale_size_continuous(range = c(2, 8)) +
+
+  geom_text(data = labels_data,
+    aes(x = max(binned_data$AR_mid, na.rm = TRUE) * 0.72,y = y_pos,label = paste0("bold(", label, ")"),color = Q10_type),
+    inherit.aes = FALSE,hjust = 0,size = 4.5,fontface = "bold",parse = TRUE) +
+
+  geom_text(data = stats_data,
+    aes(x = max(binned_data$AR_mid, na.rm = TRUE) * 0.72,y = y_pos,
+      label = paste0("bold(", label, ")"),color = Q10_type),
+    inherit.aes = FALSE,hjust = 0,size = 4,parse = TRUE)
+RA_PLOT <- RA_PLOT+theme_axes
+print(RA_PLOT)
+#ggsave("outputs/AR_SR_binned_Q10_fitted2.png", plot = RA_PLOT, width = 6, height = 8, dpi = 300)
+```
+
+```{r}
+y_positions_label <- c(3.15, 3.0, 2.55, 2.69)
+y_positions_stats <- c(3.10, 2.95, 2.50, 2.64)
+
+labels_data <- data.frame(
+  Q10_type = regression_results$Q10_type,
+  label = regression_results$label_expr,
+  y_pos = y_positions_label,
+  stringsAsFactors = FALSE
+)
+
+stats_data <- data.frame(
+  Q10_type = regression_results$Q10_type,
+  label = c(
+    sprintf("R^2==%.2f*','~italic(p)==0.05",  regression_results$R2[1]),
+    sprintf("R^2==%.2f*','~italic(p)<0.001", regression_results$R2[2]),
+    sprintf("R^2==%.2f*','~italic(p)<0.01",  regression_results$R2[3]),
+    sprintf("R^2==%.2f*','~italic(p)<0.01",  regression_results$R2[4])
+  ),
+  y_pos = y_positions_stats,
+  stringsAsFactors = FALSE
+)
+
+
+RA_PLOT_raw <-
+  ggplot(combined_data, aes(x = AR_SR, y = Q10, color = Q10_type)) +
+ geom_smooth(
+    data = combined_data,
+    aes(x = AR_SR, y = Q10, fill = Q10_type, color = Q10_type),
+    method = "lm",
+    se = TRUE,
+    linetype = "solid",
+    alpha = 0.35,
+    linewidth = 1.5
+  ) +
+  geom_point(alpha = 0.55, size = 2) +  
+  xlim(0.3, 0.7) + ylim(2.4, 3.2) +
+  labs(x = "Ra/Rs", y = expression(Q[10]^"Rs")) +
+
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    legend.position = "none",
+    plot.tag.position = c(0.12, 0.96),
+    plot.tag = element_text(face = "bold", size = rel(1.5))
+  ) +theme_axes+ 
+
+  scale_color_manual(values = c(
+    "Q10_0_10"  = "#1d9bf7",
+    "Q10_5_15"  = "#35a153",
+    "Q10_10_20" = "#f26a11",
+    "Q10_0_20"  = "#A6519E"
+  )) +
+  scale_fill_manual(values = c(
+    "Q10_0_10"  = "#C3E2EC",
+    "Q10_5_15"  = "#BCD1BC",
+    "Q10_10_20" = "#F3DAC0",
+    "Q10_0_20"  = "#E3C6E0"
+  ), guide = "none") +
+
+  geom_text(
+    data = labels_data,
+    aes(
+      x = 0.59,
+      y = y_pos,
+      label = label,
+      color = Q10_type
+    ),
+    inherit.aes = FALSE,
+    hjust = 0,
+    size = 4,
+    #fontface = "bold",
+    parse = TRUE
+  ) +
+  geom_text(
+    data = stats_data,
+    aes(
+      x = 0.59,
+      y = y_pos,
+      label = label,
+      color = Q10_type
+    ),
+    inherit.aes = FALSE,
+    hjust = 0,
+    size = 3.6,
+    parse = TRUE
+  ) +
+  theme_axes
+print(RA_PLOT_raw)
+#ggsave("outputs/AR_SR_binned_Q10_fitted2.png", plot = RA_PLOT_raw, width = 6.5, height = 4, dpi = 300)
+```
+
+```{r}
+Q10_Rs_Ra_Rh <- read.csv( "data/MGRsD_update_with_IGBP.csv")
+shapiro_test <- shapiro.test(Q10_Rs_Ra_Rh$Q10_diff)
+print(shapiro_test)
+wilcox_test <- wilcox.test(Q10_Rs_Ra_Rh$Q10_diff, mu = 0, exact = FALSE)
+print(wilcox_test)
+
+ggplot(Q10_Rs_Ra_Rh, aes(y = Q10_diff)) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Boxplot of Q10_diff",
+       y = "Q10_diff",
+       x = "") +
+  theme_minimal()
+median_Q10_diff <- median(Q10_Rs_Ra_Rh$Q10_diff, na.rm = TRUE)
+ggplot(Q10_Rs_Ra_Rh, aes(x = Q10_diff)) +
+  geom_histogram(binwidth = 0.2, color = "black", fill = NA) +  # 设置无填充色
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", size = 1) +  # 中心参考线
+  geom_vline(xintercept = median_Q10_diff, color = "black", size = 1) +  # 中位数线
+  labs(title = "Histogram of Q10_diff",
+       x = "Q10_diff",
+       y = "Count") +
+  theme_minimal()
+shapiro_test_Ra <- shapiro.test(Q10_Rs_Ra_Rh$Q10_Ra)
+shapiro_test_Rh <- shapiro.test(Q10_Rs_Ra_Rh$Q10_Rh)
+wilcox_test <- wilcox.test(Q10_Rs_Ra_Rh$Q10_Ra, Q10_Rs_Ra_Rh$Q10_Rh, paired = TRUE, exact = FALSE)
+p_value <- signif(wilcox_test$p.value, 3)
+print(wilcox_test)
+t_test_result <- t.test(Q10_Rs_Ra_Rh$Q10_Ra, Q10_Rs_Ra_Rh$Q10_Rh, paired = TRUE)
+
+Ra_Rh <- data.frame(
+  group = rep(c("Q10_Ra", "Q10_Rh"), each = nrow(Q10_Rs_Ra_Rh)),
+  value = c(Q10_Rs_Ra_Rh$Q10_Ra, Q10_Rs_Ra_Rh$Q10_Rh)
+)
+
+group_stats <- Ra_Rh %>%
+  group_by(group) %>%
+  dplyr::summarise(
+    n = n(),                           
+    mean_value = mean(value, na.rm = TRUE),  
+    max_value = max(value, na.rm = TRUE)    
+  )
+
+Ra_Rh_oaired_t <- ggplot(Ra_Rh, aes(x = group, y = value)) +
+geom_boxplot(fill = "white", color = "black", width = 0.6, outlier.colour = "black") +
+  labs(title = " ",
+       x = "",
+       y = "Q10") +
+ scale_y_continuous(limits = c(1, 6)) +  
+  theme_minimal() +
+  theme(text = element_text(size = 20),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 14),
+        panel.grid.major = element_line(color = "#E5E5E5", size = 8.5),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks = element_line(color = "#E5E5E5"),
+        plot.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA)) +
+  annotate("text", x = 1.5, y = 4, label = sprintf("p = %.4f ***", t_test_result$p.value), size = 10, color = "black")
+print(Ra_Rh_oaired_t)
+```
+
+```{r}
+set.seed(123)
+n_bootstrap <- 5000
+
+bootstrap_means_Ra <- replicate(n_bootstrap, {
+  sample(Q10_Rs_Ra_Rh$Q10_Ra, size = length(Q10_Rs_Ra_Rh$Q10_Ra), replace = TRUE) %>%
+    mean(na.rm = TRUE)
+})
+
+bootstrap_means_Rh <- replicate(n_bootstrap, {
+  sample(Q10_Rs_Ra_Rh$Q10_Rh, size = length(Q10_Rs_Ra_Rh$Q10_Rh), replace = TRUE) %>%
+    mean(na.rm = TRUE)
+})
+
+bootstrap_means_diff <- replicate(n_bootstrap, {
+  sample(Q10_Rs_Ra_Rh$Q10_diff, size = length(Q10_Rs_Ra_Rh$Q10_diff), replace = TRUE) %>%
+    mean(na.rm = TRUE)
+})
+
+bootstrap_density_all <- data.frame(
+  Value = c(bootstrap_means_Ra, bootstrap_means_Rh, bootstrap_means_diff),
+  Group = rep(c("Q10_Ra", "Q10_Rh", "Q10_diff"), each = n_bootstrap)
+)
+
+summary_lines <- bootstrap_density_all %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(
+    mean = mean(Value),
+    lower = quantile(Value, 0.025),
+    upper = quantile(Value, 0.975),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(color = dplyr::case_when(
+    Group == "Q10_Ra" ~ "red",
+    Group == "Q10_Rh" ~ "blue",
+    Group == "Q10_diff" ~ "black"
+  ))
+
+summary_lines <- summary_lines %>%
+  mutate(signif_label = case_when(
+    lower > 0 | upper < 0 ~ "***",  
+    lower * upper > 0 ~ "*",        
+    TRUE ~ "ns"                     
+  ))
+```
+
+
+```{r}
+bootstrap_diff_df <- bootstrap_density_all %>% filter(Group == "Q10_diff")
+summary_diff <- summary_lines %>% filter(Group == "Q10_diff")
+
+Bootstrap_diff_plot <- ggplot(bootstrap_diff_df, aes(x = Value)) +
+  geom_density(fill = "grey70", alpha = 0.8) +
+  geom_vline(aes(xintercept = summary_diff$mean), linetype = "dashed", size = 1) +
+  geom_vline(aes(xintercept = summary_diff$lower), linetype = "dotted", size = 0.8) +
+  geom_vline(aes(xintercept = summary_diff$upper), linetype = "dotted", size = 0.8) +
+  geom_vline(xintercept = 0, color = "red", linetype = "solid", size = 1) +
+  geom_text(
+    aes(x = 0.6, y = 3.5, label = summary_diff$signif_label),
+    size = 6, vjust = -1.2,color = "red", fontface = "bold") +
+  labs(x = expression(Q[10]^Diff ~ "Bootstrap Mean"),y = "Density" ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  ) +    scale_y_continuous(position = "right")
+
+print(Bootstrap_diff_plot)
+```
+
+```{r}
+bootstrap_means_Ra <- replicate(n_bootstrap, {
+  sample(Q10_Rs_Ra_Rh$Q10_Ra,size = length(Q10_Rs_Ra_Rh$Q10_Ra),replace = TRUE) %>% mean(na.rm = TRUE)})
+
+bootstrap_means_Rh <- replicate(n_bootstrap, {sample(Q10_Rs_Ra_Rh$Q10_Rh,size = length(Q10_Rs_Ra_Rh$Q10_Rh),replace = TRUE) %>%
+    mean(na.rm = TRUE)})
+
+bootstrap_density_all <- data.frame(Value = c(bootstrap_means_Ra, bootstrap_means_Rh), Group = rep(c("Q10_Ra", "Q10_Rh"), each = n_bootstrap))
+
+summary_lines <- bootstrap_density_all %>%
+  dplyr::group_by(Group) %>%
+  dplyr::summarise(mean  = mean(Value),lower = quantile(Value, 0.025),upper = quantile(Value, 0.975),.groups = "drop") %>%
+  dplyr::mutate(color = dplyr::case_when(Group == "Q10_Ra" ~ "red", Group == "Q10_Rh" ~ "blue"))
+Bootstrap_plot <- ggplot(bootstrap_density_all, aes(x = Value, fill = Group)) +
+  geom_density(alpha = 0.6, color = NA) +
+  geom_vline(data = summary_lines,aes(xintercept = mean,  color = Group),linetype = "dashed", size = 1) +
+  geom_vline(data = summary_lines,aes(xintercept = lower, color = Group),linetype = "dotted", size = 0.5) +
+  geom_vline(data = summary_lines, aes(xintercept = upper, color = Group),linetype = "dotted", size = 0.5) +
+
+  scale_fill_manual(values = c("Q10_Ra" = "#F7C4C1", "Q10_Rh" = "#ADD9EE"), labels = c(expression(Q[10]^Ra), expression(Q[10]^Rh)), name   = "Group") +
+  scale_color_manual(values = c("Q10_Ra" = "red", "Q10_Rh" = "blue"),labels = c(expression(Q[10]^Ra), expression(Q[10]^Rh)), name   = "Mean & 95% CI" ) +
+
+  guides( fill = guide_legend( override.aes = list(shape = 22, size = 5, color = NULL),  title = NULL),
+    color = guide_legend( override.aes = list(  linetype = "dashed",  size = 1.2 ),   title = "Mean & 95% CI")) +
+  labs( x = "Bootstrap Mean", y = "Density") +
+  scale_y_continuous(position = "left") +
+  theme_minimal() +
+  theme( panel.grid = element_blank(), panel.border = element_rect(color = "black", fill = NA, size = 1), legend.position = c(0.48, 0.6),
+    legend.text  = element_text(size = 12),  legend.key.height = unit(30, "pt"))
+Bootstrap_plot <- Bootstrap_plot+ theme_axes
+print(Bootstrap_plot)
+#ggsave("outputs/SUPfig2.png", plot = Bootstrap_plot, width = 6, height = 4, dpi = 300)
+```
+
+```{r}
+Q10_Rs_Ra_Rh <- read.csv( "data/MGRsD_update_with_IGBP.csv")
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  filter(!is.na(IGBP))  
+full_copy <- Q10_Rs_Ra_Rh %>% mutate(IGBP_group="ALL")
+
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  dplyr::mutate(
+    IGBP_group = case_when(
+      IGBP %in% c("DBF", "EBF", "ENF", "MF", "DNF") ~ "FOR",  
+      IGBP %in% c("CSH", "CVM", "OSH") ~ "SH",             
+      IGBP %in% c("GRA", "WSA") ~ "GRA",                        
+      IGBP == "CRO" ~ "CRO",                       
+      TRUE ~ NA_character_                          
+    ))
+Q10_Rs_Ra_Rh  <- bind_rows(Q10_Rs_Ra_Rh, full_copy) %>%
+  filter(!is.na(IGBP_group)) 
+
+Q10_long <- Q10_Rs_Ra_Rh %>%
+  dplyr::select(IGBP_group, Q10_Ra, Q10_Rh) %>%
+  pivot_longer(
+    cols = c(Q10_Ra, Q10_Rh),
+    names_to = "Type",
+    values_to = "Q10"
+  ) %>%
+  filter(!is.na(Q10), is.finite(Q10))
+  
+Q10_plot_data2 <- Q10_long %>%
+  dplyr::group_by(IGBP_group, Type) %>%
+  dplyr::summarise(
+    mean_value = mean(Q10, na.rm = TRUE),
+    lower_ci = quantile(Q10, 0.025, na.rm = TRUE),
+    upper_ci = quantile(Q10, 0.975, na.rm = TRUE),
+    n = n()
+  ) %>%
+  ungroup()
+
+sig_df <- Q10_Rs_Ra_Rh %>%
+  dplyr::group_by(IGBP_group) %>%
+  dplyr::summarise(
+    p_value = ifelse(sum(!is.na(Q10_Ra) & !is.na(Q10_Rh)) > 1,
+                     wilcox.test(Q10_Ra, Q10_Rh, paired = TRUE)$p.value,
+                     NA_real_),
+    n = sum(!is.na(Q10_Ra) & !is.na(Q10_Rh)),
+    mean_Ra = mean(Q10_Ra, na.rm = TRUE),
+    mean_Rh = mean(Q10_Rh, na.rm = TRUE),
+    y_pos = max(c(Q10_Ra, Q10_Rh), na.rm = TRUE) + 0.7 # 星号y坐标
+  ) %>%
+  dplyr::mutate(
+    significance_label = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01 ~ "**",
+      p_value < 0.05 ~ "*",
+      p_value > 0.05 ~ " ",
+      is.na(p_value) ~ "NA",
+      TRUE ~ "ns"
+    ),
+ label_N_p = ifelse(is.na(p_value),"p=NA",
+  ifelse( p_value < 0.001,"p<0.001",
+    paste0("p=", sprintf("%.3f", p_value)))),
+label_N_p = paste0(label_N_p, "\nN=", n))
+
+
+library(gghalves)
+library(ggbeeswarm)
+
+Q10_long$IGBP_group_num <- as.numeric(factor(Q10_long$IGBP_group, levels = c("ALL","CRO","FOR","GRA","SH")))
+
+offset <- 0.16
+
+IGBP_VIO2 <- ggplot(Q10_long, aes(x = IGBP_group, y = Q10)) +
+  gghalves::geom_half_violin(
+    data = subset(Q10_long, Type == "Q10_Ra"),
+    aes(x = IGBP_group, y = Q10),
+    side = "l",
+    fill = "pink", color = NA, alpha = 0.35, width = 0.9,
+     position = position_nudge(x = -offset)
+  ) +
+  gghalves::geom_half_violin(
+    data = subset(Q10_long, Type == "Q10_Rh"),
+    aes(x = IGBP_group, y = Q10),
+    side = "r",
+    fill = "skyblue", color = NA, alpha = 0.35, width = 0.9,
+    position = position_nudge(x = offset)
+  ) +
+  geom_quasirandom(
+    data = subset(Q10_long, Type == "Q10_Ra"),
+    aes(x = IGBP_group_num - offset, y = Q10, fill = Type),
+    color = "red",
+    width = 0.13, size = 1.4, alpha = 0.8, shape = 21, show.legend = TRUE
+  ) +
+  geom_quasirandom(
+    data = subset(Q10_long, Type == "Q10_Rh"),
+    aes(x = IGBP_group_num + offset, y = Q10, fill = Type),
+    color = "blue",
+    width = 0.13, size = 1.4, alpha = 0.8, shape = 21, show.legend = TRUE
+  ) +
+  geom_boxplot(
+  data = subset(Q10_long, Type == "Q10_Ra"),
+  aes(x = IGBP_group, y = Q10),
+  width = 0.10,            
+  side = "l",color = "red", fill = "pink", alpha = 0.8,
+  outlier.shape = NA, position = position_nudge(x = -offset)) +
+   geom_boxplot(
+    data = subset(Q10_long, Type == "Q10_Rh"),
+    aes(x = IGBP_group, y = Q10),
+     width = 0.10, 
+    side = "r", fill = "skyblue", color = "blue", outlier.shape = NA, alpha = 0.8,
+    position = position_nudge(x = offset)
+  ) +
+  labs(
+    x = NULL,
+    y = expression(bold(Q[10]))
+  ) +
+  scale_x_discrete(position = "bottom") +
+  scale_fill_manual(
+    values = c(Q10_Ra = "pink", Q10_Rh = "skyblue"),
+    labels = c(Q10_Ra = expression(Q[10]^"Ra"),
+               Q10_Rh = expression(Q[10]^"Rh")),
+    name   = NULL,
+    breaks = c("Q10_Ra", "Q10_Rh")
+  ) +
+  guides(
+    fill = guide_legend(
+      direction   = "horizontal",
+      override.aes = list(shape = 21, size = 4, alpha  = 0.6, colour = NA, alpha = 1)
+    )
+  ) + 
+  coord_cartesian(ylim = c(1.5, 11.5)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    axis.text.x = element_text(size = 12, hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12), 
+    legend.position = c(0.85, 0.78) 
+  ) +
+  geom_text(
+    data = sig_df,
+    aes(x = IGBP_group, y = 11.45, label = significance_label),
+    inherit.aes = FALSE, size = 9, color = "red"
+  ) +
+  geom_text(
+    data = sig_df,
+    aes(x = IGBP_group, y = 10.9, label = label_N_p),
+    inherit.aes = FALSE, size = 4, hjust = 0.5, color = "black"
+  )+ scale_x_discrete(
+    limits = c("ALL","CRO","FOR","GRA","SH"), 
+    labels = c(ALL = "All",
+               CRO = "Cropland",
+               FOR = "Forest",
+               GRA = "Grassland",
+               SH  = "Shrubland")
+  )
+print(IGBP_VIO2)
+#ggsave("outputs/Q10_diff_IGBP3.jpg", plot = IGBP_VIO2, width = 8.5, height = 4.5, dpi = 300)
+```
+
+```{r}
+set.seed(123)  
+n_bootstrap <- 5000 
+
+perform_bootstrap <- function(data, group_name) {
+  bootstrap_means <- replicate(
+    n_bootstrap,
+    mean(sample(data$Q10_diff, size = nrow(data), replace = TRUE), na.rm = TRUE)
+  )
+  mean_value <- mean(bootstrap_means)  
+  lower_ci <- quantile(bootstrap_means, probs = 0.025)  
+  upper_ci <- quantile(bootstrap_means, probs = 0.975)  
+  data.frame(
+    IGBP_group = group_name,
+    mean_value = mean_value,
+    lower_ci = lower_ci,
+    upper_ci = upper_ci,
+    bootstrap_mean = bootstrap_means  
+  )
+}
+bootstrap_results <- list()
+for (group in unique(Q10_Rs_Ra_Rh$IGBP_group)) {
+  group_data <- Q10_Rs_Ra_Rh %>% filter(IGBP_group == group)
+  bootstrap_results[[group]] <- perform_bootstrap(group_data, group)
+}
+bootstrap_summary <- do.call(rbind, bootstrap_results)
+library(ggridges)  
+library(viridis)   
+bootstrap_summary$IGBP_group <- factor(
+  bootstrap_summary$IGBP_group,
+  levels = c("CRO","SH","FOR","GRA","ALL")
+)
+bootstrap_ecosystems <- ggplot(bootstrap_summary, aes(x = bootstrap_mean,y = IGBP_group,fill = ..x..)) +
+  geom_vline(xintercept = 0, color = "gray", linetype = "dashed", size = 1.5) +
+  geom_density_ridges_gradient(scale = 3,rel_min_height = 0.01,gradient_lwd = 1.0, color = "white") +
+  scale_x_continuous(expand = c(0.01, 0)) +
+  scale_y_discrete(expand = c(0.01, 0), position = "right") +
+  scale_fill_viridis(name = NULL, option = "D") +
+  labs(
+    x = expression(bold("Bootstrap Mean of ") * Q[10]^Diff),
+    y = NULL) +
+  theme_ridges(font_size = 13, grid = FALSE) + 
+  theme(
+    panel.background = element_rect(fill = NA, color = NA),
+    panel.border     = element_rect(color = "black", size = 1, fill = NA),
+    axis.title.x     = element_text(hjust = 0.5, face = "bold"),
+    legend.position  = c(0.75, 0.5),
+    plot.background  = element_rect(color = "black", fill = NA, size = 1),  
+    theme_axes)
+print(bootstrap_ecosystems)
+#ggsave("outputs/Q10_diffBOOTSTRAP_IGBP.jpg", plot = bootstrap_ecosystems, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+set.seed(123)
+n_bootstrap <- 5000
+
+perform_bootstrap_col <- function(df, col, grp, type){
+  v <- df[[col]]
+  v <- v[is.finite(v) & !is.na(v)]
+  if(length(v) < 2) return(data.frame(IGBP_group=grp, Type=type, bootstrap_mean=numeric(0)))
+  data.frame(
+    IGBP_group = grp,
+    Type = type,
+    bootstrap_mean = replicate(n_bootstrap, mean(sample(v, length(v), replace = TRUE)))
+  )
+}
+
+igbp_levels <- c("ALL","CRO","FOR","GRA","SH")
+boot_list <- lapply(igbp_levels, function(g){
+  gdat <- dplyr::filter(Q10_Rs_Ra_Rh, IGBP_group == g)
+  rbind(
+    perform_bootstrap_col(gdat, "Q10_Ra", g, "Q10_Ra"),
+    perform_bootstrap_col(gdat, "Q10_Rh", g, "Q10_Rh")
+  )
+})
+bootstrap_summary <- do.call(rbind, boot_list) %>%
+  mutate(IGBP_group = factor(IGBP_group, levels = igbp_levels))
+
+set.seed(123)
+n_bootstrap <- 5000
+perform_bootstrap_col <- function(df, col, grp, type) {
+  v <- df[[col]]
+  v <- v[is.finite(v) & !is.na(v)]
+  if (length(v) < 1) {
+    return(data.frame(
+      IGBP_group = grp, Type = type, bootstrap_mean = numeric(0)
+    ))
+  }
+  data.frame(
+    IGBP_group   = grp,
+    Type         = type,
+    bootstrap_mean = replicate(n_bootstrap, mean(sample(v, length(v), replace = TRUE)))
+  )
+}
+
+groups <- igbp_levels
+boot_list <- lapply(groups, function(g){
+  gdat <- Q10_Rs_Ra_Rh %>% filter(IGBP_group == g)
+  rbind(
+    perform_bootstrap_col(gdat, "Q10_Ra", g, "Q10_Ra"),
+    perform_bootstrap_col(gdat, "Q10_Rh", g, "Q10_Rh")
+  )
+})
+bootstrap_summary <- do.call(rbind, boot_list) %>%
+  mutate(IGBP_group = factor(IGBP_group, levels = igbp_levels))
+
+ci_df <- bootstrap_summary %>%
+  dplyr::group_by(IGBP_group, Type) %>%
+  dplyr::summarise(
+    lower_ci = quantile(bootstrap_mean, 0.025, na.rm = TRUE),
+    upper_ci = quantile(bootstrap_mean, 0.975, na.rm = TRUE),
+    mean_val = mean(bootstrap_mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+igbp_levels <- unique(ci_df$IGBP_group)  
+offset_pt <- 0.12
+
+bs <- bootstrap_summary |>
+  dplyr::mutate(IGBP_group = factor(IGBP_group, levels = igbp_levels))
+
+ci_pos <- ci_df |>
+  dplyr::mutate(
+    IGBP_group = factor(IGBP_group, levels = igbp_levels),
+    xnum = as.numeric(IGBP_group),
+    xpos = ifelse(Type == "Q10_Ra", xnum - offset_pt, xnum + offset_pt)
+  )
+
+p_violin <- ggplot() +
+  gghalves::geom_half_violin(
+    data = dplyr::filter(bs, Type == "Q10_Ra"),
+    aes(x = IGBP_group, y = bootstrap_mean),
+    side = "l", width = 0.9,
+    fill = "pink", color = "red", alpha = 0.6, trim = TRUE, adjust = 0.8
+  ) +
+  gghalves::geom_half_violin(
+    data = dplyr::filter(bs, Type == "Q10_Rh"),
+    aes(x = IGBP_group, y = bootstrap_mean),
+    side = "r", width = 0.9,
+    fill = "skyblue", color = "blue", alpha = 0.6, trim = TRUE, adjust = 0.8
+  ) +
+  geom_point(
+    data = ci_pos,
+    aes(x = xpos, y = mean_val, fill = Type),
+    shape = 21, size = 2.8, stroke = 0.6, color = "black"
+  ) +
+  scale_color_manual(
+      values = c(Q10_Ra = "red", Q10_Rh = "blue"), 
+      name = NULL,
+      labels = c(
+          Q10_Ra = expression(Q[10]^"Ra"),
+          Q10_Rh = expression(Q[10]^"Rh")
+      )
+  ) +
+  scale_fill_manual(
+      values  = c(Q10_Ra = "pink", Q10_Rh = "skyblue"), 
+      name = NULL,
+      labels = c(
+          Q10_Ra = expression(Q[10]^"Ra"),
+          Q10_Rh = expression(Q[10]^"Rh")
+      )
+  ) +
+  labs(x = NULL, y = expression(bold("Bootstrap mean of ") * Q[10])) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.border       = element_rect(fill = NA, color = "black", linewidth = 0.9),
+    legend.position      = c(0.5, 0.9),
+    axis.text.x = element_text(size = 12,face = "bold"),
+    axis.text.y = element_text(size = 13,face = "bold")
+
+  )+ scale_x_discrete(
+    limits = c("ALL","CRO","FOR","GRA","SH"),        
+    labels = c(ALL = "All",
+               CRO = "Cropland",
+               FOR = "Forest",
+               GRA = "Grassland",
+               SH  = "Shrubland")
+  )
+print(p_violin)
+#ggsave("outputs/Q10_rarhBOOTSTRAP_VIO_2.jpg", plot = p_violin, width = 6, height = 4, dpi = 300)
+```
+
+#PCA    For preparing the data to be used in PCA and PLSPM, the pca_data can be found in the last section of this RMD. Connect to the external database, corresponding to the latitude and longitude of the sites, and retrieve the data.
+```{r}
+Q10_Rs_Ra_Rh <- read.csv("data/pca_data.csv")
+pca_data <- Q10_Rs_Ra_Rh %>%
+  dplyr::select(CLY, CEC, PHIKCL, BD, ORC, cec_clay_rati, C_N_rati ,et0_resampled, prec_mean, temp_mean, ai_resampled, EcM, pred_avg,AGB, BGB, GPP, EVI, N_DEC, ALd, ALo, ALp, Fed, Feo, Fep, OC_Fe)  
+pca_data_clean <- na.omit(pca_data)
+
+pca_input <- scale(pca_data_clean ) 
+pca_result <- prcomp(pca_input, center = TRUE, scale. = TRUE)
+summary(pca_result)
+
+pca_plot <- fviz_pca_biplot(
+  pca_result, 
+  geom.ind = "point",
+  #habillage = pca_data_clean$group, 
+  #palette = c("skyblue", "tomato", "green"), 
+  #addEllipses = TRUE,  
+  label = "var", 
+  repel = TRUE
+) + 
+  labs(title = "PCA of Soil Properties Related to Q10_Ra and Q10_Rh Groups") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    axis.text = element_text(size = 12) )
+print(pca_plot)
+
+loadings <- pca_result$rotation
+print(loadings)
+
+fviz_contrib(pca_result, choice = "var", axes = 1, top = 10)  
+fviz_contrib(pca_result, choice = "var", axes = 2, top = 10)  
+```
+
+#Random forest+PLSPM
+```{r setup, include=FALSE}
+Q10_Rs_Ra_Rh <- read.csv("data/pca_data.csv")
+pca_data <- Q10_Rs_Ra_Rh %>%
+  dplyr::select(CLY, SLT, CEC, PHIKCL, BD, ORC, clay_temp_ratio, cec_clay_rati, C_N_rati, prec_mean, temp_mean, ai_resampled, et0_resampled, AM, EcM, ErM, NM, nitrogen_avg, pred_avg, MAOC, POC, AGB, BGB, GPP, EVI, N_DEC,ALd, ALo, ALp, Fed, Feo, Fep, OC_Fe, Q10_Ra, Q10_Rh, IGBP_group)
+Q10_Rs_Ra_Rh_clean <- na.omit(pca_data)
+
+pca_input_scaled <- scale(Q10_Rs_Ra_Rh_clean %>%
+  dplyr::select(-c(Q10_Ra, Q10_Rh,IGBP_group)))
+
+pca_input <- scale(pca_data_clean ) 
+pca_result <- prcomp(pca_input, center = TRUE, scale. = TRUE)
+summary(pca_result)
+
+pca_input <- data.frame(
+  pca_input_scaled, 
+  Q10_Ra = Q10_Rs_Ra_Rh_clean$Q10_Ra,
+  Q10_Rh = Q10_Rs_Ra_Rh_clean$Q10_Rh)
+
+
+set.seed(123)  
+rf_model <- randomForest(Q10_Ra ~ ., data = pca_input, importance = TRUE, ntree = 500)
+rf_model <- randomForest(Q10_Rh ~ ., data = pca_input, importance = TRUE, ntree = 500)
+importance_scores <- importance(rf_model)
+
+print(importance_scores)
+importance_scores_sorted2 <- importance_scores[order(-importance_scores[,"%IncMSE"], 
+                                                    -importance_scores[,"IncNodePurity"]), ]
+print(importance_scores_sorted2)
+```
+
+```{r}
+Q10_Rs_Ra_Rh <- read.csv("data/pca_data.csv")
+theme_axes <- theme(
+  axis.title.x = element_text(size = 14),
+  axis.title.y = element_text(size = 14),
+  axis.text.x  = element_text(size = 12),
+  axis.text.y  = element_text(size = 12))
+
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  filter(IGBP != "BSV") %>% 
+  mutate(
+    IGBP_group = case_when(
+      IGBP %in% c("DBF", "EBF", "ENF", "MF") ~ "FOR",  
+      IGBP %in% c("CSH", "CVM", "OSH") ~ "SH",             
+      IGBP %in% c("GRA", "WSA") ~ "GRA",                       
+      IGBP == "CRO" ~ "CRO",                      
+      TRUE ~ NA_character_                         
+    )
+  ) %>%
+  filter(!is.na(IGBP_group)) 
+
+pca_data <- Q10_Rs_Ra_Rh %>%
+  dplyr::select(CLY, SLT, CEC, PHIKCL, BD, ORC, clay_temp_ratio, cec_clay_rati, C_N_rati, prec_mean, temp_mean, ai_resampled, et0_resampled, AM, EcM, ErM, NM, nitrogen_avg, pred_avg, MAOC, POC, AGB, BGB, GPP, EVI, N_DEC, Q10_Ra, Q10_Rh, IGBP_group)
+Q10_Rs_Ra_Rh_clean <- na.omit(pca_data)
+
+pca_input_scaled <- scale(Q10_Rs_Ra_Rh_clean %>%
+  dplyr::select(-c(Q10_Ra, Q10_Rh,IGBP_group)))
+
+pca_input <- data.frame(
+  pca_input_scaled, 
+  Q10_Ra = Q10_Rs_Ra_Rh_clean$Q10_Ra,
+  Q10_Rh = Q10_Rs_Ra_Rh_clean$Q10_Rh,
+  IGBP_group = Q10_Rs_Ra_Rh_clean$IGBP_group  
+)
+SH_data <- pca_input %>%
+  filter(IGBP_group == "SH")
+FOR_data <- pca_input %>%
+  filter(IGBP_group == "FOR")
+GRA_data <- pca_input %>%
+  filter(IGBP_group == "GRA")
+CRO_data <- pca_input %>%
+  filter(IGBP_group == "CRO")
+```
+
+```{R}
+#SH_Q10_ra------------------------------------------------------------------
+rf_model <- randomForest(Q10_Ra ~ ., data = SH_data, importance = TRUE, ntree = 500)
+rf_model <- randomForest(Q10_Rh ~ ., data = SH_data, importance = TRUE, ntree = 500)
+importance_scores <- importance(rf_model)
+print(importance_scores)
+
+selected_vars <- c("EVI", "C_N_rati", "Q10_Ra","BD","ORC", "nitrogen_avg")
+SH_selected <- SH_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Ra)  
+
+comdata <- list(
+  Soil  = c("BD" ), 
+  Nutrient  = c("C_N_rati","ORC" ),
+  Vegetation  = c("EVI"), 
+  Q10_Ra    = c("Q10_Ra") 
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Q10_Ra", c( "Soil","Nutrient","Vegetation")] <- 1
+print(dat_path)
+dat_modes <- c("A","A","A", "A")
+pls_model <- plspm(SH_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+pls_model_boot <- plspm(SH_selected, dat_path, comdata, modes = dat_modes,boot.val = TRUE,br = 500)  
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Ra") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+c1 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect" ) +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.title.y = element_text(size = 14, face = "plain")
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5)+ 
+  ylim(-1, 1)
+print(c1)
+
+#SH_Q10_rh---------------------------------------------------
+selected_vars <- c("nitrogen_avg","GPP","EVI", "Q10_Rh", "CEC", "cec_clay_rati","CLY","BGB","AM","NM")
+SH_selected <- SH_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Rh)  
+
+comdata <- list(
+  Nutrient  = c("nitrogen_avg" ),
+  Microbial    = c("BGB","NM"),  
+  Mineral = c("CEC"), 
+  Q10_Rh       = c("Q10_Rh")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Q10_Rh", c( "Nutrient","Microbial","Mineral")] <- 1
+print(dat_path)
+dat_modes <- c("A","A","A", "B")
+pls_model <- plspm(SH_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+pls_model_boot <- plspm(SH_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)  
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Rh") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+c2 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect"  ) +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "right", limits = c(-1, 1)) +
+theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.title.y = element_text(size = 14, face = "plain")
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5) 
+print(c2)
+```
+
+
+```{r}
+#FOR_Q10_Ra-------------------------------------------------------------------
+rf_model <- randomForest(Q10_Ra ~ ., data = FOR_data, importance = TRUE, ntree = 500)
+rf_model <- randomForest(Q10_Rh ~ ., data = FOR_data, importance = TRUE, ntree = 500)
+importance_scores <- importance(rf_model)
+print(importance_scores)
+
+selected_vars <- c( "temp_mean","et0_resampled","ai_resampled", "N_DEC","nitrogen_avg", "PHIKCL", "BD", "ORC","C_N_rati", "AGB","BGB","EVI","GPP","CEC" , "clay_temp_ratio","cec_clay_rati" ,"CLY","Q10_Ra","AM","EcM","ErM","pred_avg","POC","prec_mean")
+FOR_selected <- FOR_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Ra) 
+comdata <- list(
+  Soil  = c("BD"),  
+  N_Dep = c("N_DEC"),
+  Nutrient  = c("ORC","nitrogen_avg"),  
+  pH    = c("PHIKCL"),
+  Vegetation = c("AGB"),
+  Q10_Ra   = c("Q10_Ra")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Vegetation", c("Nutrient")] <- 1  
+dat_path["Q10_Ra", c("N_Dep","Soil","Vegetation","pH")] <- 1
+print(dat_path)
+dat_modes <- c("A","A","A","A","A","A", "B")
+pls_model <- plspm(FOR_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+
+pls_model_boot <- plspm(FOR_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500) 
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Ra") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+b1 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs( x = NULL,y = "Standardized Effect" ) +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "left", limits = c(-1, 1)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none", 
+    panel.grid = element_blank()
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5)
+print(b1)
+
+#FOR_Q10_Rh--------------------------------------------------------------------------------------------------------------------------------
+selected_vars <- c("ai_resampled","prec_mean","N_DEC","nitrogen_avg", "Q10_Rh","BD",  "CEC","cec_clay_rati","Feo","CLY","N_DEC","ErM","AM","NM","pred_avg","MAOC")
+FOR_selected <- FOR_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Rh)  
+comdata <- list(
+  #Climate = c("ai_resampled","prec_mean"), 
+  N_Dep   = c("N_DEC"), 
+  #Nutrient =c("nitrogen_avg"),
+  Soil = c("BD"),  
+  Microbial  = c("AM"),  
+  Mineral = c("CEC","Feo"), 
+  Q10_Rh   = c("Q10_Rh")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Mineral", c("Soil")] <- 1
+dat_path["Q10_Rh", c("N_Dep","Microbial", "Mineral")] <- 1
+print(dat_path)
+dat_modes <- c("A","A","A","A","A","A","B")
+pls_model <- plspm(FOR_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+pls_model_boot <- plspm(FOR_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)  
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Rh") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+b2 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect") +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "right", limits = c(-1, 1)) +
+theme_bw() +  
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank()
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5)
+print(b2)
+```
+
+
+```{r}
+#GRA_Q10_Ra------------------------------------------------------------------------------------------------------
+rf_model <- randomForest(Q10_Ra ~ ., data = GRA_data, importance = TRUE, ntree = 500)
+rf_model <- randomForest(Q10_Rh ~ ., data = GRA_data, importance = TRUE, ntree = 500)
+importance_scores <- importance(rf_model)
+print(importance_scores)
+
+selected_vars <- c( "ORC","AGB", "BGB","CLY","EVI", "GPP","BD","CEC","POC", "clay_temp_ratio","MAOC", "cec_clay_rati","C_N_rati","nitrogen_avg","temp_mean", "prec_mean","et0_resampled", "pred_avg","Q10_Ra")
+GRA_selected <- GRA_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Ra)  
+
+comdata <- list(
+  Climate = c("temp_mean"), 
+  Nutrient  = c("ORC","nitrogen_avg"),  
+  Soil = c("CLY"),
+  Vegetation   = c("GPP"), 
+  Q10_Ra   = c("Q10_Ra")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Q10_Ra", c("Climate", "Vegetation","Nutrient","Soil")] <- 1
+print(dat_path)
+dat_modes <- c("A","A","A","A","A","B")
+pls_model <- plspm(GRA_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+pls_model_boot <- plspm(GRA_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)  
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Ra") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+a1 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect") +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  theme_bw() +
+  theme_axes +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank()
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5) +
+  ylim(-1, 1)+
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.title = element_blank(), 
+    legend.position = c(0.05, 0.90),  
+    legend.text = element_text(size = 16),
+    legend.justification = c("left", "top"),
+    panel.grid = element_blank()
+  )
+print(a1)
+#GRA_Q10_Rh----------------------------------------------------------------------------------------------------------
+selected_vars <- c("ORC","nitrogen_avg", "BGB","et0_resampled", "ALp", "cec_clay_rati","Q10_Rh" )
+GRA_selected <- GRA_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Rh)
+comdata <- list(
+ Nutrient  = c("ORC","nitrogen_avg"),  
+  Climate  = c("et0_resampled"), 
+   Microbial =c("BGB"), 
+  Mineral  = c("ALp"),
+  Q10_Rh   = c("Q10_Rh")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Microbial", c("Nutrient")] <- 1
+dat_path["Q10_Rh", c("Mineral","Climate", "Microbial")] <- 1
+print(dat_path)
+dat_modes <- c("A", "A","A","A", "A", "A", "B")
+pls_model <- plspm(GRA_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+
+pls_model_boot <- plspm(GRA_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)  
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Rh") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+a2 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect") +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "right", limits = c(-1, 1)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none", 
+    panel.grid = element_blank()
+  ) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5)
+print(a2)
+```
+
+```{r}
+#CRO_Q10_Ra----------------------------------------------------------------------------------------------------
+rf_model <- randomForest(Q10_Ra ~ ., data = CRO_data, importance = TRUE, ntree = 500)
+rf_model <- randomForest(Q10_Rh ~ ., data = CRO_data, importance = TRUE, ntree = 500)
+importance_scores <- importance(rf_model)
+print(importance_scores)
+
+selected_vars <- c("ORC","EVI","pred_avg","nitrogen_avg", "AGB", "BGB","GPP", "BD","PHIKCL","CLY","SLT","et0_resampled", "temp_mean", "prec_mean", "POC","MAOC", "CEC",  "clay_temp_ratio", "cec_clay_rati", "N_DEC",  "N_DEC", "C_N_rati","Q10_Ra" )
+CRO_selected <- CRO_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Ra)  
+comdata <- list(
+  Climate = c("temp_mean"), 
+  N_Dep =c("N_DEC"),  
+  Nutrient = c("POC","nitrogen_avg"),
+  Vegetation= c("EVI"),
+  Q10_Ra   = c("Q10_Ra")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Vegetation", c("N_Dep")] <- 1
+dat_path["Vegetation", c("Nutrient")] <- 1
+dat_path["Q10_Ra", c("Climate", "Vegetation")] <- 1
+print(dat_path)
+dat_modes <- c("A", "A","A","A", "A", "B")
+pls_model <- plspm(CRO_selected, dat_path, comdata, modes = dat_modes)
+summary(pls_model)
+
+pls_model_boot <- plspm(CRO_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)   
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Ra") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+d1 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect") +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "left", limits = c(-1, 1)) +
+ theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank()) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5) 
+print(d1)
+
+#CRO_Q10_Rh----------------------------------------------------------------------------------------------------
+selected_vars <- c("ORC","nitrogen_avg", "BGB", "temp_mean", "CEC",  "clay_temp_ratio", "cec_clay_rati",  "Fep","Q10_Rh" )
+
+CRO_selected <- CRO_data %>%
+  dplyr::select(all_of(selected_vars), Q10_Rh)  
+comdata <- list(
+  Climate = c("temp_mean"), 
+    Mineral = c("CEC","Fep"),  
+Nutrient  = c("ORC","nitrogen_avg"),  
+  Microbial =c("BGB"),
+  Q10_Rh   = c("Q10_Rh")  
+)
+latent_vars <- names(comdata)
+dat_path <- matrix(0, nrow = length(latent_vars), ncol = length(latent_vars),
+                   dimnames = list(latent_vars, latent_vars))
+dat_path["Nutrient", c("Mineral")] <- 1
+dat_path["Q10_Rh", c("Climate","Microbial", "Mineral","Nutrient")] <- 1
+print("路径矩阵:")
+print(dat_path)
+dat_modes <- c("A","A", "A","A", "A","B")
+pls_model_boot <- plspm(CRO_selected, dat_path, comdata, 
+                        modes = dat_modes,
+                        boot.val = TRUE,
+                        br = 500)   
+summary(pls_model_boot)
+print(pls_model_boot$gof)
+plot(pls_model_boot)
+
+effects_df_split <- pls_model_boot$effects %>%
+  separate(relationships, into = c("cause", "response"), sep = " -> ")
+q10_effects <- effects_df_split %>%
+  filter(response == "Q10_Rh") %>%
+  dplyr::select(cause, direct, indirect, total) %>%
+  dplyr::rename(relationships = cause)
+trad_effects_long <- pivot_longer(q10_effects,
+                                   cols = c("direct", "indirect", "total"),
+                                   names_to = "effect_type",
+                                   values_to = "effect_size")
+d2 <- ggplot(trad_effects_long, aes(x = relationships, y = effect_size, fill = effect_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = NULL,y = "Standardized Effect") +
+  scale_fill_manual(
+    values = c(
+      "direct" = "#008CB7",
+      "indirect" = "#A5C98C",
+      "total" = "#FFBD00"
+    ),
+    labels = c(
+      "direct" = "Direct Effect",
+      "indirect" = "Indirect Effect",
+      "total" = "Total Effect"
+    )
+  ) +
+  scale_y_continuous(position = "right", limits = c(-1, 1)) +
+  theme_bw()  +
+  theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "none",
+    panel.grid = element_blank()) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black", size = 0.5) 
+print(d2)
+
+```
+
+```{r}
+eco<- terra::rast("data/Ecoregions_5_classes_0.05.tif")
+eco_df <- as.data.frame(eco, xy = TRUE, na.rm = TRUE)
+colnames(eco_df)[3] <- "class_id"
+class_colors <- c(
+  "1" = "#1b7837",   # forest
+  "2" = "#e08214",   # shrubland
+  "3" = "#a6dba0",   # grassland
+  "4" = "lightgray", # desert
+  "5" = "#FAECA8"    # cropland
+)
+class_labels <- c(
+  "1" = "Forest","2" = "Shrubland", "3" = "Grassland","4" = "Desert",  "5" = "Cropland")
+
+
+landcover_df <- IGBP_koppen %>%
+  dplyr::select(Longitude, Latitude, IGBP)
+
+srdb_v4 <- srdb_v4 %>%
+  filter(!is.na(Longitude) & !is.na(Latitude))%>%
+  filter(!is.na(RC_annual))
+
+srdb_sub <- srdb_sub %>%
+  filter(!is.na(Longitude) & !is.na(Latitude))
+
+partition_df <- srdb_v4 %>%
+  filter(Partition_method != "" & !is.na(Partition_method)) %>%
+  group_by(Partition_method) %>%
+  dplyr::summarise(Count = n()) %>%
+  arrange(desc(Count)) %>%
+  mutate(
+    Prop = Count / sum(Count),
+    Label = paste0(Partition_method, " (", Count, ")"))
+partition_raw <- srdb_v4 %>%
+  filter(Partition_method != "" & !is.na(Partition_method)) %>%
+  group_by(Partition_method) %>%
+  dplyr::summarise(Count = dplyr::n()) %>%
+  arrange(desc(Count))
+partition_df <- partition_raw %>%
+  dplyr::mutate(Partition_method = ifelse(dplyr::row_number() <= 4, Partition_method, "Other")) %>%
+  dplyr::group_by(Partition_method) %>%
+  dplyr::summarise(Count = sum(Count)) %>%
+  dplyr::mutate(
+    Prop = Count / sum(Count),
+    Label = paste0(Partition_method, " (", Count, ")"))  %>%
+  dplyr::mutate(
+    percent_label = paste0(Partition_method, "\n", sprintf("%.2f%%", Prop * 100))
+  )
+partition_df <- partition_df %>%
+  arrange(desc(Partition_method)) %>%
+  dplyr::mutate(ypos = cumsum(Prop) - 0.5 * Prop) %>%
+  dplyr::mutate(outside = Prop < 0.1)
+partition_big <- partition_df %>% filter(!outside)
+partition_small <- partition_df %>% filter(outside)
+
+pie_plot <- ggplot(partition_df, aes(x = 1.6, y = Prop, fill = Partition_method)) +
+  geom_bar(stat = "identity", width = 0.45, color = "white") +
+  coord_polar(theta = "y", start = pi-pi* (30 / 180) ) +
+  xlim(0.5, 2.5) +
+  geom_text(data = partition_big,
+            aes(y = ypos, x = 1.4, label = percent_label),
+            color = "black", size = 2.5, hjust = -0.1, fontface = "bold") +
+  geom_text(data = partition_small,
+            aes(y = ypos, x = 2.1, label = percent_label, fontface = "bold"),
+            color = "black", size = 2.3, hjust = 0) +
+
+    scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.margin = ggplot2::margin(0, 0, 0, 0, unit = "mm")
+  )
+print(pie_plot)
+pie_grob <- ggplotGrob(pie_plot)
+
+eco_df <- as.data.frame(eco, xy = TRUE, na.rm = TRUE)
+colnames(eco_df)[3] <- "class_id"
+eco_df_robin <- sf::st_as_sf(eco_df, coords = c("x", "y"), crs = 4326) %>%st_transform(crs = "+proj=robin")
+coords_eco <- st_coordinates(eco_df_robin)
+eco_df_robin <- cbind(as.data.frame(coords_eco), class_id = eco_df$class_id)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+world_robin <- st_transform(world, crs = "+proj=robin")
+grat_robin <- sf::st_graticule(lat = seq(-60, 90, 30), lon = seq(-180, 180, 60)) %>%
+  st_transform(crs = "+proj=robin")
+srdb_sub_sf <- st_as_sf(srdb_sub, coords = c("Longitude", "Latitude"), crs = 4326)
+srdb_sub_robin <- st_transform(srdb_sub_sf, crs = "+proj=robin")
+coords_srdb <- st_coordinates(srdb_sub_robin)
+srdb_sub_df_robin <- cbind(as.data.frame(coords_srdb), YearsOfData = srdb_sub_robin$YearsOfData)
+
+landcover_sf <- st_as_sf(landcover_df, coords = c("Longitude", "Latitude"), crs = 4326)
+landcover_sf_robin <- st_transform(landcover_sf, crs = "+proj=robin")
+coords <- st_coordinates(landcover_sf_robin)
+landcover_df_robin <- cbind(as.data.frame(coords), IGBP = landcover_sf_robin$IGBP)
+landcover_df_robin <- landcover_df_robin %>%
+  mutate(Ecosystem_simple = case_when(
+    IGBP %in% c("ENF", "EBF", "DNF", "DBF", "MF") ~ "Forest",
+    IGBP %in% c("GRA", "SAV", "WSA", "BSV")       ~ "Grassland",
+    IGBP %in% c("OSH", "CSH", "CVM")                     ~ "Shrubland",
+    IGBP %in% c("CRO")                     ~ "Cropland",
+    IGBP == "URB"                                 ~ "Urban",
+    TRUE                                          ~ "Other"
+  ))
+landcover_points <- landcover_df_robin %>%dplyr::select(X, Y, IGBP)
+srdb_sub_points <- srdb_sub_df_robin %>%dplyr::select(X, Y)
+nn <- RANN::nn2(data = landcover_points[, c("X", "Y")],query = srdb_sub_points[, c("X", "Y")],k = 1)
+nearest_index <- nn$nn.idx[, 1]
+srdb_sub_df_robin$IGBP <- landcover_points$IGBP[nearest_index]
+srdb_sub_df_robin <- srdb_sub_df_robin %>%
+  mutate(Ecosystem_simple = case_when(
+    IGBP %in% c("ENF", "EBF", "DNF", "DBF", "MF") ~ "Forest",
+    IGBP %in% c("GRA", "SAV", "WSA", "BSV")       ~ "Grassland",
+    IGBP %in% c("OSH", "CSH", "CVM")             ~ "Shrubland",
+    IGBP %in% c("CRO")                     ~ "Cropland",
+    IGBP == "URB"                                 ~ "Urban",
+    TRUE                                          ~ "Other"
+  ))
+srdb_sub_df_robin %>%
+  dplyr::count(Ecosystem_simple) %>%
+  arrange(desc(n))
+size_legend_plot <- ggplot(data = srdb_sub_df_robin, aes(x = X, y = Y, size = YearsOfData)) +
+  geom_point(color = "red", alpha = 0.8, shape = 1) +
+   scale_size_continuous(name = "Years of Count") + 
+  guides(size = guide_legend(
+    direction = "horizontal",
+    title.position = "top",
+    title.hjust = 0.5
+  )) +
+  theme_void() +
+  theme(
+    legend.position = "top",
+    legend.justification = "center",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9, face = "bold"),
+    legend.background = element_rect(fill = scales::alpha("white", 0.6), color = NA)
+  )
+size_legend <- get_legend(size_legend_plot)
+
+class_colors <- c(
+  "1" = "#1b7837",   # Forest
+  "2" = "#fac074",   # Shrubland
+  "3" = "#a6dba0",   # Grassland
+  "5" = "#FAECA8"    # Cropland
+)
+
+legend_labels <- c(
+  "1" = "Forest (54.02%)",
+  "5" = "Cropland (11.49%)",
+  "3" = "Grassland (20.69%)",
+  "2" = "Shrubland (13.79%)")
+
+main_map <- ggplot() +
+  geom_sf(data = world_robin, fill = "gray95", color = "white", size = 0.2) +
+    geom_sf(data = grat_robin, color = "gray80", linewidth = 0.25) +
+  geom_tile(data = eco_df_robin,aes(x = X, y = Y, fill = as.factor(class_id)),
+            width = 100000, height = 100000) +
+  geom_jitter(data = srdb_sub_df_robin,
+              aes(x = X, y = Y, size = YearsOfData),
+              color = "red", alpha = 0.7, shape = 1 ) +
+  scale_size_continuous(guide = "none") +  
+scale_fill_manual(
+  values = class_colors,
+  name = "Ecosystem",
+  labels = legend_labels
+)+
+  coord_sf(
+    xlim = c(-18000000, 18000000),
+    ylim = c(-8000000, 10000000),
+    crs = "+proj=robin", expand = FALSE
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8), 
+    legend.position = c(0.01, 0.75),
+    legend.justification = c("left", "center"),
+    legend.box = "vertical",
+    legend.background = element_rect(fill = scales::alpha("white", 0.6), color = NA),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9, face = "bold")
+  )
+print(main_map)
+
+final_plot <- ggdraw() +
+  draw_plot(main_map, x = 0, y = 0, width = 1, height = 1) +  # 地图铺满
+  draw_plot(pie_plot, x = -0.1, y = 0.02, width = 0.5, height = 0.45)+  # 饼图嵌图
+  draw_plot(size_legend, x = 0.35, y = 0.85, width = 0.3, height = 0.15)+
+  draw_plot_label(label = "(b)", x = 0.05, y = 0.38, size = 12)+ 
+  draw_plot_label(label = "(a)", x = 0.01, y = 0.95, size = 12) 
+print(final_plot)
+#ggsave("outputs/SRDB_SITES.png", plot = final_plot, width = 9, height = 4.5, dpi = 300)
+```
+
+
+```{r}
+Q10_Rs_Ra_Rh <- read.csv( "data/MGRsD_update_with_IGBP.csv")
+srdb_v5 <- read.csv(paste0(DATA_DIR, '/', 'srdb_v5.csv'), header = T) # SRDB_V5 数据
+srdb_v5_unique <- srdb_v5 %>%
+  distinct(Site_ID, .keep_all = TRUE)
+Q10_Rs_Ra_Rh <- left_join(Q10_Rs_Ra_Rh, srdb_v5_unique[, c("Site_ID", "YearsOfData", "Study_midyear")], by = "Site_ID")
+
+density_plot <- ggplot(Q10_Rs_Ra_Rh, aes(x = Study_midyear)) +
+  geom_histogram(aes(y = ..density..), binwidth = 2, fill = "gray80", color = "white", alpha = 0.7) +  # 浅灰色柱子
+  geom_density(color = "black", size = 0.6) + 
+  theme_minimal() +
+  labs(x = "Study Year", y = "Density") +
+  theme(
+    panel.background = element_rect(fill = scales::alpha("white", 0.6), color = NA),
+    panel.grid = element_blank(),               
+    panel.border = element_blank(),             
+    axis.line = element_line(color = "black"), 
+    axis.title = element_text(size = 10, face = "bold"),
+    axis.text = element_text(size = 9)
+  )
+print(density_plot)
+
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  filter(!is.na(IGBP))  
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  filter(IGBP != "BSV") %>% 
+  mutate(
+    IGBP_group = case_when(
+      IGBP %in% c("DBF", "EBF", "ENF", "MF") ~ "Forest", 
+      IGBP %in% c("CSH", "OSH","CVM") ~ "Shrubland",            
+      IGBP %in% c("GRA", "WSA") ~ "Grassland", 
+      IGBP == "CRO" ~ "Cropland",                          
+      TRUE ~ "Other"                         
+    )
+  ) %>%
+  filter(!is.na(IGBP_group)) 
+
+Q10_sf <- st_as_sf(Q10_Rs_Ra_Rh, coords = c("Longitude", "Latitude"), crs = 4326)
+Q10_robin <- st_transform(Q10_sf, crs = "+proj=robin")
+coords_Q10 <- st_coordinates(Q10_robin)
+Q10_df_robin <- cbind(
+  as.data.frame(coords_Q10),
+  YearsOfData = Q10_robin$YearsOfData,
+  IGBP_group = Q10_robin$IGBP_group
+)
+Q10_df_robin %>%
+  dplyr::count(IGBP_group) %>%
+  arrange(desc(n))
+
+legend_labels <- c(
+   "1" = "Forest (94)",
+  "5" = "Cropland (36)",
+  "3" = "Grassland (81)",
+  "2" = "Shrubland (31)"
+)
+
+main_map <- ggplot() +
+  geom_sf(data = world_robin, fill = "gray95", color = "white", size = 0.2) +
+    geom_sf(data = grat_robin, color = "gray80", linewidth = 0.25) +
+  geom_tile(data = eco_df_robin, aes(x = X, y = Y, fill = as.factor(class_id)),
+            width = 100000, height = 100000) +
+  geom_jitter(data = Q10_df_robin,
+              aes(x = X, y = Y, size = YearsOfData),
+              color = "red", alpha = 0.7, shape = 1) +
+  scale_size_continuous(guide = "none") +  
+scale_fill_manual(
+  values = class_colors,name = "Ecosystem",labels = legend_labels)+
+  coord_sf(xlim = c(-18000000, 18000000), ylim = c(-8000000, 10000000),
+    crs = "+proj=robin", expand = FALSE ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8), 
+    legend.position = c(0.01, 0.76),
+    legend.justification = c("left", "center"),
+    legend.box = "vertical",
+    legend.background = element_rect(fill = scales::alpha("white", 0.6), color = NA),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9, face = "bold")
+  )
+print(main_map)
+
+final_plot2 <- ggdraw() +
+  draw_plot(main_map, x = 0, y = 0, width = 1, height = 1) +  # 地图铺满
+  draw_plot(density_plot, x = 0.02, y = 0.05, width = 0.3, height = 0.28)+  # 饼图嵌图
+  draw_plot(size_legend, x = 0.35, y = 0.85, width = 0.3, height = 0.15)+
+  draw_plot_label(label = "(d)", x = 0.05, y = 0.38, size = 12)+ 
+  draw_plot_label(label = "(c)", x = 0.01, y = 0.95, size = 12) 
+print(final_plot)
+#ggsave("outputs/MGRsD_SITES.png", plot = final_plot, width = 9, height = 4.5, dpi = 300) 
+
+  combined_plot <- ggarrange(
+  final_plot, final_plot2, ncol = 1, heights = c(1, 1))
+#ggsave("outputs/SUPFIG1.png", plot = combined_plot, width = 9, height = 9, dpi = 300)
+```
+
+```{r}
+#Prepare data for PLSPM
+#prec_list <- list.files("data/wc10", pattern = "^prec[0-9]+\\.bil$", full.names = TRUE)
+#prec_stack <- rast(prec_list)  
+#prec_mean <- terra::app(prec_stack, fun = sum, na.rm = TRUE)
+#writeRaster(prec_mean, "data/precipitation.tif", overwrite = TRUE)
+#tmean_list <- list.files("data/wc10", pattern = "^tmean[0-9]+\\.bil$", full.names = TRUE)
+#tmean_stack <- rast(tmean_list)  
+#tmean_mean <- terra::app(tmean_stack, fun = sum, na.rm = TRUE)
+#writeRaster(tmean_mean, "data/temperature.tif", overwrite = TRUE)
+#prec <- terra::rast("data/precipitation.tif")
+#temp <- terra::rast("data/temperature.tif")
+#ai <- terra::rast("data/Global-AI_ET0_annual_v3/ai_v3_yr.tif")
+#et0 <- terra::rast("data/Global-AI_ET0_annual_v3/et0_v3_yr.tif")
+#agb <- terra::rast("data/agb.tif")
+#bgb <- terra::rast("data/bgb.tif")
+#gpp <- terra::rast("data/fluxcom_gpp2.tif")
+#evi <- terra::rast("data/EVI_mean.tif")
+#n_dec <- terra::rast("data/global_mean_Nitrogen_depostion_1980_2017_half_degree.tif")
+#AM <- terra::rast("data/MycDistrAM_current.tif")
+#EcM <- terra::rast("data/MycDistrEM_current.tif")
+#ErM <- terra::rast("data/MycDistrER_current.tif")
+#NM <- terra::rast("data/MycDistrNM_current.tif")
+Q10_Rs_Ra_Rh <- read.csv( "MGRsD_update_with_IGBP.csv")
+clay <- terra::rast("data/soilGRIDS/CLYPPT_M_sl2_250m_ll.tif")
+silt <- terra::rast("data/soilGRIDS/SLTPPT_M_sl2_250m_ll.tif")
+cec <- terra::rast("data/soilGRIDS/CECSOL_M_sl2_250m_ll.tif")
+ph_kcl <- terra::rast("data/soilGRIDS/PHIKCL_M_sl2_250m_ll.tif")
+bd <- terra::rast("data/soilGRIDS/BLDFIE_M_sl2_250m_ll.tif")
+soc<- terra::rast("data/soilGRIDS/ORCDRC_M_sl2_250m_ll.tif")
+# Extract the longitude and latitude information from Q10_Rs_Ra_Rh to create site_points
+site_points <- vect(Q10_Rs_Ra_Rh, geom = c("Longitude", "Latitude"), crs = crs(clay))
+soil_proper <- terra::extract(c(clay, silt, cec, ph_kcl, bd, soc), site_points, ID = TRUE)
+colnames(soil_proper) <- c("ID","CLY", "SLT", "CEC", "PHIKCL", "BD", "ORC")
+ref_raster <- bd
+gpp_resampled <- resample(gpp, ref_raster, method = "bilinear")
+evi_resampled <- resample(evi, ref_raster, method = "bilinear")
+n_dec_resampled <- resample(n_dec, ref_raster, method = "bilinear")
+gpp_resampled <- crop(gpp_resampled, ref_raster)
+evi_resampled <- crop(evi_resampled, ref_raster)
+n_dec_resampled <- crop(n_dec_resampled, ref_raster)
+
+plant <- terra::extract(c(agb, bgb, gpp_resampled, evi_resampled, n_dec_resampled), site_points, ID = TRUE)
+colnames(plant) <- c("ID","AGB", "BGB", "GPP", "EVI", "N_DEC")
+ai_resampled <- resample(ai, prec)
+et0_resampled <- resample(et0, prec)
+soil_climate <- terra::extract(c(prec, temp, ai_resampled, et0_resampled), site_points, ID = TRUE)
+colnames(soil_climate) <- c("ID", "prec_mean", "temp_mean", "ai_resampled", "et0_resampled")
+soil_bio <- terra::extract(c(AM, EcM, ErM, NM), site_points, ID = TRUE)
+colnames(soil_bio) <- c("ID", "AM", "EcM", "ErM", "NM")
+combined <- left_join(soil_proper, soil_climate, by = "ID")
+combined2 <- left_join(combined , plant, by = "ID")
+SOIL_DATA <- left_join(combined2, soil_bio, by = "ID")
+SOIL_DATA <- SOIL_DATA %>% 
+   dplyr::mutate(row_id = row_number())  
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>% 
+   dplyr::mutate(row_id = row_number()) %>%  
+  left_join(SOIL_DATA, by = "row_id") %>%  
+  dplyr::select(-row_id)  
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+site_points_sf <- st_as_sf(site_points)
+sitemap <- ggplot() + 
+  geom_sf(data = world, fill = "gray90", color = "gray60") +  # 世界地图
+  geom_sf(data = site_points_sf, size = 2, alpha = 0.8, color = "red") +  # 站点
+  labs(
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  coord_sf( xlim = c(-180, 180), ylim = c(-60, 90), expand = FALSE )
+print(sitemap)
+
+Q10_Rs_Ra_Rh <- Q10_Rs_Ra_Rh %>%
+  mutate(
+    clay_temp_ratio = CLY / temp_mean,
+    cec_clay_ratio  = CEC / CLY,
+    clay_silt_sum   = CLY + SLT,
+    Qa_Qh           = Q10_Ra / Q10_Rh
+  )
+```
+
+
+```{r}
+MBC_list <- list.files(path = "data/MBC_resample1_pred_all_vars", pattern = "resample1_all_\\d{4}\\.rds", full.names = TRUE)
+raster_MBC <- lapply(MBC_list, readRDS)
+site_coords <- terra::crds(site_points)
+variables <- c("elev", "nitrogen", "pred")
+extracted_data <- lapply(variables, function(var) {
+  matrix(NA, nrow = nrow(site_coords), ncol = length(raster_MBC))
+})
+names(extracted_data) <- variables
+for (i in seq_along(raster_MBC)) {
+  current_df <- raster_MBC[[i]]
+    current_df <- current_df[!is.na(current_df$x) & !is.na(current_df$y), ]
+    for (j in seq_len(nrow(site_coords))) {
+    lon <- site_coords[j, 1]
+    lat <- site_coords[j, 2]
+    dists <- sqrt((current_df$x - lon)^2 + (current_df$y - lat)^2)
+    closest_index <- which.min(dists)
+    if (length(closest_index) > 0 && closest_index <= nrow(current_df)) {
+      for (var in variables) {
+        extracted_data[[var]][j, i] <- current_df[closest_index, var]
+      }
+    } else {
+      for (var in variables) {
+        extracted_data[[var]][j, i] <- NA
+      }
+    }
+  }
+}
+average_data <- lapply(extracted_data, function(data) {
+  rowMeans(data, na.rm = TRUE)
+})
+Q10_Rs_Ra_Rh$elev_avg <- average_data$elev
+Q10_Rs_Ra_Rh$nitrogen_avg <- average_data$nitrogen
+Q10_Rs_Ra_Rh$pred_avg <- average_data$pred
+
+maoc_poc <- read.csv( "data/MAOC_POC/MAOC_POC.csv")
+maoc_poc <- maoc_poc[!is.na(maoc_poc$lon) & !is.na(maoc_poc$lat), ]
+maoc_values <- numeric(nrow(site_coords))
+poc_values <- numeric(nrow(site_coords))
+for (i in seq_len(nrow(site_coords))) {
+  lon <- site_coords[i, 1]
+  lat <- site_coords[i, 2]
+  dists <- sqrt((maoc_poc$lon - lon)^2 + (maoc_poc$lat - lat)^2)
+  closest_index <- which.min(dists)
+  if (length(closest_index) > 0 && closest_index <= nrow(maoc_poc)) {
+    maoc_values[i] <- maoc_poc$MAOC[closest_index]
+    poc_values[i] <- maoc_poc$POC[closest_index]
+  } else {
+    maoc_values[i] <- NA
+    poc_values[i] <- NA
+  }
+}
+Q10_Rs_Ra_Rh$MAOC <- maoc_values
+Q10_Rs_Ra_Rh$POC <- poc_values
+Q10_Rs_Ra_Rh$Qa.Qh <- ifelse(!is.na(Q10_Rs_Ra_Rh$Q10_Ra) & !is.na(Q10_Rs_Ra_Rh$Q10_Rh), 
+                              Q10_Rs_Ra_Rh$Q10_Ra / Q10_Rs_Ra_Rh$Q10_Rh, 
+                              NA)
+Q10_Rs_Ra_Rh$clay_temp_ratio <- ifelse(!is.na(Q10_Rs_Ra_Rh$CLY) & !is.na(Q10_Rs_Ra_Rh$temp_mean), 
+                              Q10_Rs_Ra_Rh$CLY / Q10_Rs_Ra_Rh$temp_mean, 
+                              NA)
+Q10_Rs_Ra_Rh$cec_clay_rati <- ifelse(!is.na(Q10_Rs_Ra_Rh$CEC) & !is.na(Q10_Rs_Ra_Rh$CLY), 
+                              Q10_Rs_Ra_Rh$CEC / Q10_Rs_Ra_Rh$CLY, 
+                              NA)
+Q10_Rs_Ra_Rh$C_N_rati <- ifelse(!is.na(Q10_Rs_Ra_Rh$ORC) & !is.na(Q10_Rs_Ra_Rh$nitrogen_avg), 
+                              Q10_Rs_Ra_Rh$ORC / Q10_Rs_Ra_Rh$nitrogen_avg, 
+                              NA)
+#write.csv(Q10_Rs_Ra_Rh, "pca_data.csv")
+```
+
+```{r}
+#Q10_Rs_Ra_Rh <- read.csv( data"/pca_data.csv")
+#ALd <- terra::rast("data/FeAl/Ald_0-30cm.tif")
+#ALo <- terra::rast("data/FeAl/Alo_0-30cm.tif")
+#ALp <- terra::rast("data/FeAl/Alp_0-30cm.tif")
+#Fed <- terra::rast("data/FeAl/Fed_0-30cm.tif")
+#Feo <- terra::rast("data/FeAl/Feo_0-30cm.tif")
+#Fep <- terra::rast("data/FeAl/Fep_0-30cm.tif")
+#OC_Fe <- terra::rast("data/FeAl/OC-Fe_0-30cm_kgm2.tif")
+
+site_points_ll <- terra::vect(
+  Q10_Rs_Ra_Rh,
+  geom = c("Longitude", "Latitude"),
+  crs  = "EPSG:4326"
+)
+site_points_prj <- terra::project(site_points_ll, terra::crs(ALd))
+
+ras_stack <- c(ALd, ALo, ALp, Fed, Feo, Fep, OC_Fe)
+soil_FeAl <- terra::extract(ras_stack, site_points_prj, ID = TRUE)
+colnames(soil_FeAl) <- c("ID","ALd", "ALo", "ALp", "Fed", "Feo", "Fep", "OC_Fe")
+soil_FeAl2 <- soil_FeAl[, -1]
+#Q10_Rs_Ra_Rh <- cbind(Q10_Rs_Ra_Rh, soil_FeAl2)
+#write.csv(Q10_Rs_Ra_Rh, "pca_data.csv")
+```
